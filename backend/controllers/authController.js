@@ -14,6 +14,7 @@ const toPublicUser = (user) => ({
   id: user._id,
   name: user.name,
   email: user.email,
+  role: user.role || 'USER',
   address: user.address,
   bookCredits: user.bookCredits
 });
@@ -71,7 +72,53 @@ exports.login = async (req, res, next) => {
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ success: false, message: 'Email hoặc mật khẩu không chính xác.' });
     }
+    if (user.role === 'ADMIN') {
+      return res.status(403).json({ success: false, message: 'Vui lòng đăng nhập qua trang quản trị.' });
+    }
 
+    return res.status(200).json({
+      success: true,
+      token: createToken(user._id),
+      data: toPublicUser(user)
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+exports.adminLogin = async (req, res, next) => {
+  try {
+    const { username, password } = req.body;
+    if (typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password) {
+      return res.status(400).json({ success: false, message: 'Vui lòng nhập tài khoản và mật khẩu quản trị.' });
+    }
+    const email = username.trim().toLowerCase() === 'admin'
+      ? (process.env.ADMIN_EMAIL || 'admin@bookswap.test').toLowerCase()
+      : username.trim().toLowerCase();
+    const user = await User.findOne({ email }).select('+password');
+    if (!user || user.role !== 'ADMIN' || !(await bcrypt.compare(password, user.password))) {
+      return res.status(401).json({ success: false, message: 'Tài khoản hoặc mật khẩu quản trị không chính xác.' });
+    }
+    return res.status(200).json({
+      success: true,
+      token: createToken(user._id),
+      data: toPublicUser(user)
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+exports.courierLogin = async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+    if (typeof email !== 'string' || typeof password !== 'string' || !email.trim() || !password) {
+      return res.status(400).json({ success: false, message: 'Vui lòng nhập email và mật khẩu nhân viên.' });
+    }
+    const user = await User.findOne({ email: email.trim().toLowerCase(), role: 'COURIER' }).select('+password');
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(401).json({ success: false, message: 'Email hoặc mật khẩu nhân viên không chính xác.' });
+    }
     return res.status(200).json({
       success: true,
       token: createToken(user._id),

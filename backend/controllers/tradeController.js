@@ -11,7 +11,13 @@ exports.findTradeLoops = async (req, res, next) => {
       status: 'AVAILABLE',
       $or: [
         { owner: userId, type: 'WISHLIST' },
-        { type: 'OWNED' }
+        {
+          type: 'OWNED',
+          $or: [
+            { listingMode: 'TRADE' },
+            { listingMode: { $exists: false } }
+          ]
+        }
       ]
     }).populate('owner', 'name');
     const wishlists = new Map();
