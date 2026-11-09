@@ -1,10 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
-  assignAdminCourier,
   adminLogin,
   collectAdminDeliveryFee,
   createAdminCourier,
-  createAdminDelivery,
   fetchAdminBooks,
   fetchAdminCouriers,
   fetchAdminDeliveries,
@@ -12,8 +10,11 @@ import {
   fetchAdminDashboard,
   fetchAdminTransactions,
   fetchAdminUsers,
-  getMe
-} from './services/api.js';
+  getMe,
+  setAdminCourierStatus
+} from '../../../services/api.js';
+import ChatPanel from '../../../shared/ChatPanel.jsx';
+import { SiteFooter, SiteHeader } from '../../../shared/SiteLayout.jsx';
 
 const currency = new Intl.NumberFormat('vi-VN', {
   style: 'currency',
@@ -39,6 +40,7 @@ function AdminApp() {
   const [submittingForm, setSubmittingForm] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [detailRecord, setDetailRecord] = useState(null);
 
   const refreshAdminData = async () => {
     const [dashboardResult, usersResult, transactionsResult, couriersResult, deliveriesResult] = await Promise.all([
@@ -110,7 +112,7 @@ function AdminApp() {
 
   const handleCollectFee = async (delivery) => {
     const expectedFee = delivery.book?.maintenanceFee ?? Math.round(((delivery.book?.coverPrice || 0) * 2) / 100);
-    if (!window.confirm(`Đã kiểm tra ảnh giao hàng/COD và xác nhận ghi nhận ${currency.format(expectedFee)} phí duy trì cho đơn "${delivery.book?.title}"? Điểm sẽ chỉ được cộng nếu Gemini đánh giá sách đủ điều kiện.`)) return;
+    if (!window.confirm(`Đã kiểm tra ảnh giao hàng/COD và xác nhận ghi nhận ${currency.format(expectedFee)} phí duy trì cho đơn "${delivery.book?.title}"? Điểm sẽ được tính theo giá trị AI và mức hư hại.`)) return;
     setCompletingBookId(delivery._id);
     setError('');
     setNotice('');
@@ -124,25 +126,6 @@ function AdminApp() {
       setError(requestError.response?.data?.message || 'Không thể ghi nhận phí vận chuyển.');
     } finally {
       setCompletingBookId('');
-    }
-  };
-
-  const handleCreateDelivery = async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    setSubmittingForm(true);
-    setError('');
-    try {
-      await createAdminDelivery(Object.fromEntries(new FormData(form).entries()));
-      setNotice('Đã tạo đơn và giao cho nhân viên vận chuyển.');
-      form.reset();
-      await refreshAdminData();
-      const { data } = await fetchAdminBooks();
-      setBooks(data.data);
-    } catch (requestError) {
-      setError(requestError.response?.data?.message || 'Không thể tạo đơn vận chuyển.');
-    } finally {
-      setSubmittingForm(false);
     }
   };
 
@@ -163,17 +146,25 @@ function AdminApp() {
     }
   };
 
-  const handleAssignCourier = async (delivery, courierId) => {
-    setCompletingBookId(delivery._id);
+  const handleRefresh = async () => {
+    setLoading(true);
     setError('');
     try {
-      const { data } = await assignAdminCourier(delivery._id, courierId);
-      setNotice(data.message);
-      await refreshAdminData();
+      await Promise.all([refreshAdminData(), fetchAdminBooks().then(({ data }) => setBooks(data.data))]);
     } catch (requestError) {
-      setError(requestError.response?.data?.message || 'Không thể phân công nhân viên giao hàng.');
+      setError(requestError.response?.data?.message || 'Không thể làm mới dữ liệu quản trị.');
     } finally {
-      setCompletingBookId('');
+      setLoading(false);
+    }
+  };
+
+  const handleCourierStatus = async (courier) => {
+    try {
+      const { data } = await setAdminCourierStatus(courier._id, courier.isActive === false);
+      setCouriers((current) => current.map((item) => item._id === courier._id ? data.data : item));
+      setNotice(data.message);
+    } catch (requestError) {
+      setError(requestError.response?.data?.message || 'Không thể cập nhật trạng thái nhân viên.');
     }
   };
 
@@ -209,14 +200,14 @@ function AdminApp() {
 
   return (
     <div className="admin-shell">
-      <header className="admin-header">
-        <a className="brand" href="/"><span className="brand-mark">b</span><span>book<span className="brand-accent">swap</span></span><span className="admin-badge">ADMIN</span></a>
-        <div className="account-actions"><span className="welcome">Xin chào, <strong>{admin.name}</strong></span><button className="button button-quiet" onClick={signOut}>Đăng xuất</button></div>
-      </header>
+      <SiteHeader className="admin-header" badge="ADMIN">
+        <span className="welcome">Xin chào, <strong>{admin.name}</strong></span>
+        <button className="button button-quiet" onClick={signOut}>Đăng xuất</button>
+      </SiteHeader>
       <main className="admin-main">
         <div className="section-heading">
           <div><p className="eyebrow">BOOKSWAP ENGINE</p><h1>Bảng điều khiển</h1><p className="muted">Theo dõi cộng đồng, đơn COD, doanh số và phí duy trì.</p></div>
-          <button className="button button-quiet" onClick={() => window.location.reload()}>Làm mới</button>
+          <button className="button button-quiet refresh-button" type="button" onClick={handleRefresh} disabled={loading} aria-label="Làm mới dữ liệu" title="Làm mới dữ liệu">⟳</button>
         </div>
         <nav className="admin-nav" aria-label="Điều hướng quản trị">
           {[['overview', 'Tổng quan'], ['books', 'Sách'], ['users', 'Người dùng'], ['deliveries', 'Đơn vận chuyển'], ['couriers', 'Nhân viên'], ['transactions', 'Giao dịch']].map(([tab, label]) => (
@@ -241,7 +232,7 @@ function AdminApp() {
                 </section>
                 <section className="admin-panel">
                   <div className="admin-panel-heading"><h2>Sách hư hại cao cần lưu ý</h2><button className="text-button" onClick={() => { setDamageFilter('HIGH'); setActiveTab('books'); }}>Xem danh sách</button></div>
-                  <AdminBookTable books={books.filter((book) => book.damageLevel === 'HIGH').slice(0, 5)} />
+                  <AdminBookTable books={books.filter((book) => book.damageLevel === 'HIGH').slice(0, 5)} onView={(book) => setDetailRecord({ type: 'book', record: book })} />
                 </section>
               </>
             )}
@@ -250,44 +241,30 @@ function AdminApp() {
                 <div className="admin-panel-heading"><div><h2>Quản lý sách</h2><p className="muted">{books.length} bản ghi trong bộ lọc</p></div>
                   <label className="admin-filter">Lọc hư hại<select value={damageFilter} onChange={(event) => setDamageFilter(event.target.value)}><option value="">Tất cả mức độ</option><option value="LOW">Nhẹ</option><option value="MEDIUM">Trung bình</option><option value="HIGH">Cao</option></select></label>
                 </div>
-                <AdminBookTable books={books.filter((book) => !damageFilter || book.damageLevel === damageFilter || (damageFilter === 'LOW' && !book.damageLevel))} />
+                <AdminBookTable books={books.filter((book) => !damageFilter || book.damageLevel === damageFilter || (damageFilter === 'LOW' && !book.damageLevel))} onView={(book) => setDetailRecord({ type: 'book', record: book })} />
               </section>
             )}
             {activeTab === 'users' && (
               <section className="admin-panel">
                 <div className="admin-panel-heading"><div><h2>Thông tin người dùng</h2><p className="muted">{users.length} thành viên</p></div></div>
-                <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Tên</th><th>Email</th><th>Địa chỉ</th><th>Số sách</th><th>Điểm</th></tr></thead><tbody>
-                  {users.map((user) => <tr key={user._id}><td>{user.name}</td><td>{user.email}</td><td>{user.address}</td><td>{user.bookCount}</td><td>{user.bookCredits}</td></tr>)}
+                <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Tên</th><th>Email</th><th>Địa chỉ</th><th>Số sách</th><th>Điểm</th><th>Chi tiết</th></tr></thead><tbody>
+                  {users.map((user) => <tr key={user._id}><td>{user.name}</td><td>{user.email}</td><td>{user.address}</td><td>{user.bookCount}</td><td>{user.bookCredits}</td><td><button className="text-button" onClick={() => setDetailRecord({ type: 'user', record: user })}>Xem</button></td></tr>)}
                 </tbody></table>{users.length === 0 && <p className="admin-empty">Chưa có người dùng.</p>}</div>
               </section>
             )}
             {activeTab === 'transactions' && (
               <section className="admin-panel">
-                <div className="admin-panel-heading"><div><h2>Giao dịch hoàn tất</h2><p className="muted">Nhân viên xác nhận giao; admin duyệt ảnh, ghi phí và cộng điểm đủ điều kiện.</p></div></div>
-                <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Sách</th><th>Người đăng</th><th>Giá bìa</th><th>Phí đã thu</th><th>Điểm đã cộng</th><th>Admin xác nhận</th><th>Thời gian</th></tr></thead><tbody>
-                  {transactions.map((transaction) => <tr key={transaction._id}><td>{transaction.book?.title || 'Sách đã xóa'}</td><td>{transaction.owner?.name || '—'}</td><td>{currency.format(transaction.coverValue)}</td><td>{transaction.feeCollectedAt ? currency.format(transaction.feeCollected) : 'Chờ admin duyệt'}</td><td>{transaction.creditsAwarded || 0}</td><td>{transaction.completedBy?.name || '—'}</td><td>{new Date(transaction.completedAt).toLocaleString('vi-VN')}</td></tr>)}
+                <div className="admin-panel-heading"><div><h2>Giao dịch hoàn tất</h2><p className="muted">Nhân viên xác nhận giao; admin duyệt ảnh, ghi phí và cộng điểm theo giá trị AI cùng mức hư hại.</p></div></div>
+                <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Sách</th><th>Người đăng</th><th>Giá bìa</th><th>Phí đã thu</th><th>Điểm đã cộng</th><th>Admin xác nhận</th><th>Thời gian</th><th>Chi tiết</th></tr></thead><tbody>
+                  {transactions.map((transaction) => <tr key={transaction._id}><td>{transaction.book?.title || 'Sách đã xóa'}</td><td>{transaction.owner?.name || '—'}</td><td>{currency.format(transaction.coverValue)}</td><td>{transaction.feeCollectedAt ? currency.format(transaction.feeCollected) : 'Chờ admin duyệt'}</td><td>{transaction.creditsAwarded || 0}</td><td>{transaction.completedBy?.name || '—'}</td><td>{new Date(transaction.completedAt).toLocaleString('vi-VN')}</td><td><button className="text-button" onClick={() => setDetailRecord({ type: 'transaction', record: transaction })}>Xem</button></td></tr>)}
                 </tbody></table>{transactions.length === 0 && <p className="admin-empty">Chưa có giao dịch hoàn tất.</p>}</div>
               </section>
             )}
             {activeTab === 'deliveries' && (
-              <>
-                <section className="admin-panel">
-                  <div className="admin-panel-heading"><div><h2>Tạo đơn và phân công</h2><p className="muted">Chọn sách trao đổi, nhập người nhận và nhân viên giao hàng.</p></div></div>
-                  <form className="form-grid admin-create-form" onSubmit={handleCreateDelivery}>
-                    <label>Sách<select name="bookId" required defaultValue=""><option value="" disabled>Chọn sách trao đổi</option>{books.filter((book) => book.type === 'OWNED' && book.status === 'AVAILABLE' && book.listingMode !== 'SALE').map((book) => <option key={book._id} value={book._id}>{book.title} — {book.owner?.name}</option>)}</select></label>
-                    <label>Nhân viên<select name="courierId" required defaultValue=""><option value="" disabled>Chọn nhân viên</option>{couriers.map((courier) => <option key={courier._id} value={courier._id}>{courier.name} — {courier.phone}</option>)}</select></label>
-                    <label>Tên người nhận<input name="recipientName" required maxLength="100" /></label>
-                    <label>SĐT người nhận<input name="recipientPhone" type="tel" required /></label>
-                    <label>Địa chỉ giao<input name="address" required maxLength="300" /></label>
-                    <button className="button button-primary form-submit" type="submit" disabled={submittingForm || !couriers.length}>{submittingForm ? 'Đang tạo...' : 'Tạo đơn vận chuyển'}</button>
-                  </form>
-                  {!couriers.length && <p className="form-hint">Hãy tạo tài khoản nhân viên trước trong tab Nhân viên.</p>}
-                </section>
-                <section className="admin-panel">
+              <section className="admin-panel">
                   <div className="admin-panel-heading"><div><h2>Đơn vận chuyển</h2><p className="muted">Chỉ duyệt phí sau khi nhân viên tải ảnh xác nhận.</p></div></div>
-                  <DeliveryTable deliveries={deliveries} couriers={couriers} onCollect={handleCollectFee} onAssign={handleAssignCourier} loadingId={completingBookId} />
+                  <DeliveryTable deliveries={deliveries} onCollect={handleCollectFee} loadingId={completingBookId} onView={(delivery) => setDetailRecord({ type: 'delivery', record: delivery })} />
                 </section>
-              </>
             )}
             {activeTab === 'couriers' && (
               <>
@@ -303,14 +280,17 @@ function AdminApp() {
                   </form>
                 </section>
                 <section className="admin-panel">
-                  <div className="admin-panel-heading"><div><h2>Liên hệ nhân viên vận chuyển</h2><p className="muted">Gọi điện, nhắn SMS hoặc mở WhatsApp trên thiết bị của bạn.</p></div></div>
-                  <CourierTable couriers={couriers} />
+                  <div className="admin-panel-heading"><div><h2>Nhân viên vận chuyển</h2><p className="muted">Quản lý trạng thái tài khoản; nhắn tin và gọi thoại nội bộ qua khung chat.</p></div></div>
+                  <CourierTable couriers={couriers} onView={(courier) => setDetailRecord({ type: 'courier', record: courier })} onToggle={handleCourierStatus} />
                 </section>
               </>
             )}
           </>
         )}
       </main>
+      {detailRecord && <DetailsDialog detail={detailRecord} onClose={() => setDetailRecord(null)} />}
+      <ChatPanel user={admin} role="ADMIN" />
+      <SiteFooter />
     </div>
   );
 }
@@ -319,11 +299,11 @@ function StatCard({ label, value, detail }) {
   return <article className="admin-stat-card"><span>{label}</span><strong>{value}</strong><small>{detail}</small></article>;
 }
 
-function AdminBookTable({ books }) {
+function AdminBookTable({ books, onView }) {
   return (
     <div className="admin-table-wrap">
       <table className="admin-table">
-        <thead><tr><th>Sách</th><th>Người đăng</th><th>Giá bìa</th><th>Hư hại</th><th>Phí 2%</th><th>Trạng thái</th></tr></thead>
+        <thead><tr><th>Sách</th><th>Người đăng</th><th>Giá bìa</th><th>Hư hại</th><th>Phí 2%</th><th>Trạng thái</th><th>Chi tiết</th></tr></thead>
         <tbody>
           {books.map((book) => <tr key={book._id}>
             <td><strong>{book.title}</strong><small>{book.author || 'Chưa rõ tác giả'} · {book.listingMode === 'SALE' ? `Bán · còn ${book.stockQuantity ?? 1}` : 'Trao đổi'}</small></td>
@@ -332,25 +312,12 @@ function AdminBookTable({ books }) {
             <td><span className={`damage-pill damage-${book.damageLevel || 'LOW'}`}>{damageLabels[book.damageLevel] || 'Nhẹ'}</span></td>
             <td>{currency.format(book.maintenanceFee ?? Math.round((book.coverPrice * 2) / 100))}</td>
             <td>{book.status === 'TRADED' ? 'Đã trao đổi' : book.status === 'OUT_OF_STOCK' ? 'Hết hàng' : book.status === 'AVAILABLE' ? 'Đang đăng' : 'Đang giữ chỗ'}</td>
+            <td><button className="text-button" onClick={() => onView(book)}>Xem</button></td>
           </tr>)}
         </tbody>
       </table>
       {books.length === 0 && <p className="admin-empty">Không có sách phù hợp với bộ lọc.</p>}
     </div>
-  );
-}
-
-function CourierContact({ courier }) {
-  if (!courier?.phone) return <span>Chưa có SĐT</span>;
-  const rawDigits = courier.phone.replace(/\D/g, '');
-  const phoneDigits = rawDigits.startsWith('0') ? `84${rawDigits.slice(1)}` : rawDigits;
-  const phoneUri = courier.phone.replace(/[^\d+]/g, '');
-  return (
-    <span className="contact-actions">
-      <a href={`tel:${phoneUri}`} aria-label={`Gọi ${courier.name}`}>Gọi</a>
-      <a href={`sms:${phoneUri}`} aria-label={`Nhắn SMS cho ${courier.name}`}>SMS</a>
-      <a href={`https://wa.me/${phoneDigits}`} target="_blank" rel="noreferrer" aria-label={`Nhắn WhatsApp cho ${courier.name}`}>WhatsApp</a>
-    </span>
   );
 }
 
@@ -380,28 +347,25 @@ function DeliveryProof({ deliveryId }) {
   return <a className="proof-link" href={proofUrl} target="_blank" rel="noreferrer"><img src={proofUrl} alt="Ảnh xác nhận giao sách" />Xem ảnh</a>;
 }
 
-function DeliveryTable({ deliveries, couriers, onCollect, onAssign, loadingId }) {
-  const statusLabels = { PENDING_ASSIGNMENT: 'Chờ phân công', ASSIGNED: 'Chờ nhận đơn', IN_TRANSIT: 'Đang giao', DELIVERED: 'Đã giao — chờ duyệt ảnh', COMPLETED: 'Hoàn tất, đã ghi phí' };
+function DeliveryTable({ deliveries, onCollect, loadingId, onView }) {
+  const statusLabels = { PENDING_ASSIGNMENT: 'Chờ shipper nhận đơn', ASSIGNED: 'Đã có shipper nhận', IN_TRANSIT: 'Đang giao', DELIVERED: 'Đã giao — chờ duyệt ảnh', COMPLETED: 'Hoàn tất, đã ghi phí' };
   return (
     <div className="admin-table-wrap">
       <table className="admin-table">
-        <thead><tr><th>Sách / người đăng</th><th>Người nhận</th><th>Nhân viên</th><th>Trạng thái / COD</th><th>Bằng chứng</th><th>Phí</th><th>Thao tác</th></tr></thead>
+        <thead><tr><th>Sách / người đăng</th><th>Người nhận</th><th>Nhân viên</th><th>Trạng thái / COD</th><th>Bằng chứng</th><th>Phí</th><th>Thao tác</th><th>Chi tiết</th></tr></thead>
         <tbody>
           {deliveries.map((delivery) => (
             <tr key={delivery._id}>
               <td><strong>{delivery.book?.title || 'Sách đã xóa'}</strong><small>{delivery.orderType === 'PURCHASE' ? `Đơn mua COD · ${delivery.quantity || 1} cuốn` : 'Đổi sách'} · {delivery.book?.owner?.name || '—'} · {delivery.book?.owner?.email || ''}</small></td>
               <td>{delivery.recipientName}<small><a href={`tel:${delivery.recipientPhone}`}>{delivery.recipientPhone}</a><br />{delivery.address}</small></td>
-              <td>{delivery.courier?.name || '—'}<small>{delivery.courier?.email || ''}</small><CourierContact courier={delivery.courier} /></td>
+              <td>{delivery.courier?.name || '—'}<small>{delivery.courier?.email || ''}</small></td>
               <td>{statusLabels[delivery.status] || delivery.status}{delivery.orderType === 'PURCHASE' && <small>COD: {currency.format(delivery.cashToCollect || 0)} · {delivery.pointsUsed || 0} điểm · {delivery.codCollected ? 'đã thu' : 'chưa thu'}</small>}</td>
               <td>{delivery.hasProof ? <DeliveryProof deliveryId={delivery._id} /> : 'Chưa có ảnh'}</td>
               <td>{currency.format(delivery.book?.maintenanceFee ?? Math.round(((delivery.book?.coverPrice || 0) * 2) / 100))}</td>
-              <td>{delivery.status === 'PENDING_ASSIGNMENT'
-                ? <select aria-label={`Phân công đơn ${delivery._id}`} defaultValue="" disabled={loadingId === delivery._id || !couriers.length} onChange={(event) => {
-                  if (event.target.value) onAssign(delivery, event.target.value);
-                }}><option value="" disabled>Chọn nhân viên</option>{couriers.map((courier) => <option key={courier._id} value={courier._id}>{courier.name}</option>)}</select>
-                : delivery.status === 'DELIVERED'
+              <td>{delivery.status === 'DELIVERED'
                 ? <button className="button button-primary admin-complete" onClick={() => onCollect(delivery)} disabled={loadingId === delivery._id}>{loadingId === delivery._id ? 'Đang lưu...' : 'Duyệt & ghi phí'}</button>
-                : delivery.status === 'COMPLETED' ? 'Đã ghi nhận' : 'Chờ nhân viên'}</td>
+                : delivery.status === 'COMPLETED' ? 'Đã ghi nhận' : delivery.status === 'PENDING_ASSIGNMENT' ? 'Chờ shipper nhận' : 'Nhân viên đang xử lý'}</td>
+              <td><button className="text-button" onClick={() => onView(delivery)}>Xem</button></td>
             </tr>
           ))}
         </tbody>
@@ -411,16 +375,70 @@ function DeliveryTable({ deliveries, couriers, onCollect, onAssign, loadingId })
   );
 }
 
-function CourierTable({ couriers }) {
+function CourierTable({ couriers, onView, onToggle }) {
   return (
     <div className="admin-table-wrap">
       <table className="admin-table">
-        <thead><tr><th>Nhân viên</th><th>Email</th><th>Điện thoại / liên hệ</th></tr></thead>
+        <thead><tr><th>Nhân viên</th><th>Email</th><th>Điện thoại</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
         <tbody>{couriers.map((courier) => (
-          <tr key={courier._id}><td>{courier.name}</td><td>{courier.email}</td><td>{courier.phone || '—'}<CourierContact courier={courier} /></td></tr>
+          <tr key={courier._id}>
+            <td>{courier.name}</td><td>{courier.email}</td><td>{courier.phone || '—'}</td>
+            <td>{courier.isActive === false ? 'Đã khóa' : 'Đang hoạt động'}</td>
+            <td className="admin-row-actions">
+              <button className="text-button" onClick={() => onView(courier)}>Chi tiết</button>
+              <button className="text-button" onClick={() => onToggle(courier)}>{courier.isActive === false ? 'Mở khóa' : 'Khóa tài khoản'}</button>
+            </td>
+          </tr>
         ))}</tbody>
       </table>
       {couriers.length === 0 && <p className="admin-empty">Chưa có nhân viên vận chuyển.</p>}
+    </div>
+  );
+}
+
+function DetailsDialog({ detail, onClose }) {
+  const { type, record } = detail;
+  const detailRows = type === 'user' ? [
+    ['Tên', record.name], ['Email', record.email], ['Địa chỉ', record.address],
+    ['Số sách', record.bookCount], ['Điểm hiện có', record.bookCredits], ['Ngày tham gia', record.createdAt]
+  ] : type === 'book' ? [
+    ['Tên sách', record.title], ['Tác giả', record.author], ['Tóm tắt', record.summary],
+    ['Người đăng', record.owner?.name], ['Email người đăng', record.owner?.email],
+    ['Giá bìa', currency.format(record.coverPrice || 0)], ['Giá đăng bán', currency.format(record.salePrice || 0)],
+    ['Tồn kho', record.stockQuantity], ['Hình thức', record.listingMode === 'SALE' ? 'Đăng bán' : 'Trao đổi'],
+    ['Tình trạng', record.condition], ['Hư hại', damageLabels[record.damageLevel] || 'Không yêu cầu'],
+    ['Mô tả hư hại', record.damageNotes], ['Phí duy trì', currency.format(record.maintenanceFee || 0)],
+    ['Trạng thái', record.status], ['Ngày đăng', record.createdAt]
+  ] : type === 'delivery' ? [
+    ['Mã đơn', record._id], ['Loại đơn', record.orderType], ['Sách', record.book?.title],
+    ['Người đăng', record.book?.owner?.name], ['Người mua', record.buyer?.name],
+    ['Người nhận', record.recipientName], ['Điện thoại nhận', record.recipientPhone],
+    ['Địa chỉ', record.address], ['Nhân viên', record.courier?.name],
+    ['Trạng thái', record.status], ['Số lượng', record.quantity || 1],
+    ['Giá đơn', currency.format((record.salePrice || 0) * (record.quantity || 1))],
+    ['Điểm đã dùng', record.pointsUsed], ['COD cần thu', currency.format(record.cashToCollect || 0)],
+    ['COD đã thu', record.codCollected ? 'Có' : 'Chưa'], ['Có ảnh xác nhận', record.hasProof ? 'Có' : 'Chưa']
+  ] : type === 'courier' ? [
+    ['Tên', record.name], ['Email', record.email], ['Điện thoại', record.phone],
+    ['Địa chỉ', record.address], ['Trạng thái', record.isActive === false ? 'Đã khóa' : 'Đang hoạt động'],
+    ['Ngày tạo', record.createdAt]
+  ] : [
+    ['Mã giao dịch', record._id], ['Sách', record.book?.title], ['Người đăng', record.owner?.name],
+    ['Giá trị sách', currency.format(record.coverValue || 0)], ['Tỷ lệ phí', `${record.feeRate || 0}%`],
+    ['Phí đã thu', currency.format(record.feeCollected || 0)], ['Điểm đã cộng', record.creditsAwarded || 0],
+    ['Ngày hoàn tất', record.completedAt], ['Admin xác nhận', record.completedBy?.name]
+  ];
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="auth-modal admin-detail-modal" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+        <button className="modal-close" aria-label="Đóng" onClick={onClose}>×</button>
+        <p className="eyebrow">BOOKSWAP · CHI TIẾT</p>
+        <h2 id="detail-title">{type === 'user' ? 'Thông tin người dùng' : type === 'book' ? 'Thông tin sách' : type === 'delivery' ? 'Thông tin đơn vận chuyển' : type === 'courier' ? 'Thông tin nhân viên' : 'Thông tin giao dịch'}</h2>
+        <dl className="detail-list">{detailRows.map(([label, value]) => value !== undefined && value !== null && value !== '' && (
+          <div key={label}><dt>{label}</dt><dd>{label.includes('Ngày') ? new Date(value).toLocaleString('vi-VN') : value}</dd></div>
+        ))}</dl>
+      </section>
     </div>
   );
 }

@@ -1,12 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import {
+  claimCourierDelivery,
   courierLogin,
   fetchCourierDeliveries,
   fetchCourierDeliveryProof,
   getMe,
   startCourierDelivery,
   uploadCourierProof
-} from './services/api.js';
+} from '../../../services/api.js';
+import ChatPanel from '../../../shared/ChatPanel.jsx';
+import { SiteFooter, SiteHeader } from '../../../shared/SiteLayout.jsx';
 
 const currency = new Intl.NumberFormat('vi-VN', {
   style: 'currency',
@@ -89,6 +92,31 @@ function CourierApp() {
     }
   };
 
+  const handleClaim = async (delivery) => {
+    setActiveDeliveryId(delivery._id);
+    setError('');
+    setNotice('');
+    try {
+      const { data } = await claimCourierDelivery(delivery._id);
+      setNotice(data.message);
+      try {
+        await refreshDeliveries();
+      } catch (refreshError) {
+        setError(`Đã nhận đơn nhưng không thể làm mới danh sách: ${refreshError.response?.data?.message || 'lỗi kết nối.'}`);
+      }
+    } catch (requestError) {
+      const claimError = requestError.response?.data?.message || 'Không thể nhận đơn vận chuyển.';
+      setError(claimError);
+      try {
+        await refreshDeliveries();
+      } catch (refreshError) {
+        setError(`${claimError} Danh sách đơn cũng chưa thể làm mới: ${refreshError.response?.data?.message || 'lỗi kết nối.'}`);
+      }
+    } finally {
+      setActiveDeliveryId('');
+    }
+  };
+
   const handleConfirmDelivery = async (event, delivery) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -143,32 +171,34 @@ function CourierApp() {
 
   return (
     <div className="admin-shell">
-      <header className="admin-header">
-        <a className="brand" href="/"><span className="brand-mark">b</span><span>book<span className="brand-accent">swap</span></span><span className="admin-badge">VẬN CHUYỂN</span></a>
-        <div className="account-actions"><span className="welcome">Xin chào, <strong>{courier.name}</strong></span><button className="button button-quiet" onClick={signOut}>Đăng xuất</button></div>
-      </header>
+      <SiteHeader className="admin-header" badge="VẬN CHUYỂN">
+        <span className="welcome">Xin chào, <strong>{courier.name}</strong></span>
+        <button className="button button-quiet" onClick={signOut}>Đăng xuất</button>
+      </SiteHeader>
       <main className="admin-main">
         <div className="section-heading">
-          <div><p className="eyebrow">KHU VỰC NHÂN VIÊN</p><h1>Đơn vận chuyển của tôi</h1><p className="muted">Cập nhật trạng thái và gửi ảnh khi đã giao sách cho người nhận.</p></div>
-          <button className="button button-quiet" onClick={() => refreshDeliveries().catch((requestError) => setError(requestError.response?.data?.message || 'Không tải được danh sách đơn.'))}>Làm mới</button>
+          <div><p className="eyebrow">KHU VỰC NHÂN VIÊN</p><h1>Đơn vận chuyển</h1><p className="muted">Chọn đơn đang chờ nhận, cập nhật trạng thái và gửi ảnh xác nhận sau khi giao.</p></div>
+          <button className="button button-quiet refresh-button" type="button" onClick={() => refreshDeliveries().catch((requestError) => setError(requestError.response?.data?.message || 'Không tải được danh sách đơn.'))} aria-label="Làm mới danh sách" title="Làm mới danh sách">⟳</button>
         </div>
         {error && <div className="notice notice-error">{error}<button onClick={() => setError('')} aria-label="Đóng thông báo">×</button></div>}
         {notice && <div className="notice notice-success">{notice}<button onClick={() => setNotice('')} aria-label="Đóng thông báo">×</button></div>}
         {loading ? <div className="loading-state">Đang tải đơn vận chuyển...</div> : deliveries.length === 0 ? (
-          <div className="empty-state"><h3>Chưa có đơn được phân công</h3><p>Đơn mới sẽ xuất hiện tại đây sau khi admin giao cho bạn.</p></div>
+          <div className="empty-state"><h3>Chưa có đơn vận chuyển</h3><p>Đơn mới sẽ xuất hiện tại đây khi khách đặt sách.</p></div>
         ) : (
           <section className="courier-delivery-list">
-            {deliveries.map((delivery) => <CourierDeliveryCard key={delivery._id} delivery={delivery} active={activeDeliveryId === delivery._id} onStart={handleStart} onSubmit={handleConfirmDelivery} />)}
+            {deliveries.map((delivery) => <CourierDeliveryCard key={delivery._id} delivery={delivery} active={activeDeliveryId === delivery._id} onClaim={handleClaim} onStart={handleStart} onSubmit={handleConfirmDelivery} />)}
           </section>
         )}
       </main>
+      <ChatPanel user={courier} role="COURIER" />
+      <SiteFooter />
     </div>
   );
 }
 
-function CourierDeliveryCard({ delivery, active, onStart, onSubmit }) {
+function CourierDeliveryCard({ delivery, active, onClaim, onStart, onSubmit }) {
   const [proofUrl, setProofUrl] = useState('');
-  const statusLabels = { ASSIGNED: 'Chờ lấy/giao', IN_TRANSIT: 'Đang vận chuyển', DELIVERED: 'Đã xác nhận giao — chờ admin duyệt phí', COMPLETED: 'Hoàn tất' };
+  const statusLabels = { PENDING_ASSIGNMENT: 'Đang chờ nhân viên nhận', ASSIGNED: 'Chờ lấy/giao', IN_TRANSIT: 'Đang vận chuyển', DELIVERED: 'Đã xác nhận giao — chờ admin duyệt', COMPLETED: 'Hoàn tất' };
 
   useEffect(() => {
     if (!delivery.hasProof) return undefined;
@@ -196,9 +226,9 @@ function CourierDeliveryCard({ delivery, active, onStart, onSubmit }) {
         <p><strong>Điện thoại:</strong> <a href={`tel:${delivery.recipientPhone}`}>{delivery.recipientPhone}</a></p>
         <p><strong>Địa chỉ:</strong> {delivery.address}</p>
         {delivery.orderType === 'PURCHASE' && <p><strong>Số lượng:</strong> {delivery.quantity || 1} cuốn · <strong>Thu COD:</strong> {currency.format(delivery.cashToCollect || 0)} ({delivery.pointsUsed || 0} điểm đã trừ)</p>}
-        <p><strong>Phí duy trì dự kiến:</strong> {currency.format(delivery.book?.maintenanceFee ?? Math.round(((delivery.book?.coverPrice || 0) * 2) / 100))} (admin xác nhận)</p>
       </div>
       {proofUrl && <a className="courier-proof-preview" href={proofUrl} target="_blank" rel="noreferrer"><img src={proofUrl} alt="Ảnh xác nhận giao sách" />Xem ảnh đã gửi</a>}
+      {delivery.status === 'PENDING_ASSIGNMENT' && <button className="button button-primary" type="button" onClick={() => onClaim(delivery)} disabled={active}>{active ? 'Đang nhận đơn...' : 'Nhận đơn này'}</button>}
       {delivery.status === 'ASSIGNED' && <button className="button button-primary" type="button" onClick={() => onStart(delivery)} disabled={active}>{active ? 'Đang cập nhật...' : 'Bắt đầu vận chuyển'}</button>}
       {['ASSIGNED', 'IN_TRANSIT'].includes(delivery.status) && (
         <form className="courier-proof-form" onSubmit={(event) => onSubmit(event, delivery)}>

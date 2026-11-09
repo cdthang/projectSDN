@@ -4,6 +4,7 @@ const API = axios.create({
   baseURL: import.meta.env.VITE_API_URL || 'http://localhost:9999/api',
 });
 const apiBaseUrl = API.defaults.baseURL.replace(/\/$/, '');
+export const socketServerUrl = apiBaseUrl.replace(/\/api$/, '');
 
 API.interceptors.request.use((config) => {
   const tokenKey = window.location.pathname.startsWith('/admin')
@@ -49,11 +50,10 @@ export const createAdminCourier = (courier) => API.post('/admin/couriers', couri
 export const fetchAdminBooks = (params = {}) => API.get('/admin/books', { params });
 export const fetchAdminTransactions = () => API.get('/admin/transactions');
 export const fetchAdminDeliveries = () => API.get('/admin/deliveries');
-export const createAdminDelivery = (delivery) => API.post('/admin/deliveries', delivery);
-export const assignAdminCourier = (deliveryId, courierId) => API.post(`/admin/deliveries/${deliveryId}/assign`, { courierId });
 export const collectAdminDeliveryFee = (deliveryId) => API.post(`/admin/deliveries/${deliveryId}/collect-fee`);
 export const fetchAdminDeliveryProof = (deliveryId) => API.get(`/admin/deliveries/${deliveryId}/proof`, { responseType: 'blob' });
 export const fetchCourierDeliveries = () => API.get('/courier/deliveries');
+export const claimCourierDelivery = (deliveryId) => API.post(`/courier/deliveries/${deliveryId}/claim`);
 export const startCourierDelivery = (deliveryId) => API.post(`/courier/deliveries/${deliveryId}/start`);
 export const uploadCourierProof = (deliveryId, proof, codCollected = false) => {
   const formData = new FormData();
@@ -62,3 +62,9 @@ export const uploadCourierProof = (deliveryId, proof, codCollected = false) => {
   return API.post(`/courier/deliveries/${deliveryId}/proof`, formData);
 };
 export const fetchCourierDeliveryProof = (deliveryId) => API.get(`/courier/deliveries/${deliveryId}/proof`, { responseType: 'blob' });
+export const fetchChatContacts = () => API.get('/chat/contacts');
+export const fetchChatConversations = () => API.get('/chat/conversations');
+export const openChatConversation = (recipientId) => API.post('/chat/conversations', { recipientId });
+export const fetchChatMessages = (conversationId) => API.get(`/chat/conversations/${conversationId}/messages`);
+export const sendChatMessage = (conversationId, text) => API.post(`/chat/conversations/${conversationId}/messages`, { text });
+export const setAdminCourierStatus = (courierId, isActive) => API.patch(`/admin/couriers/${courierId}/status`, { isActive });

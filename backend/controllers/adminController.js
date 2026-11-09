@@ -2,9 +2,8 @@ const Book = require('../models/Book');
 const Delivery = require('../models/Delivery');
 const TradeTransaction = require('../models/TradeTransaction');
 const User = require('../models/User');
-const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
-const calculateCreditValue = require('../utils/creditCalculator');
+const calculateAssessmentCredits = require('../utils/assessmentCreditCalculator');
 
 const feeRate = 2;
 const feeForBook = (book) => Math.round((book.coverPrice * feeRate) / 100);
@@ -120,10 +119,39 @@ exports.listUsers = async (req, res, next) => {
 exports.listCouriers = async (req, res, next) => {
   try {
     const couriers = await User.find({ role: 'COURIER' })
-      .select('name email phone createdAt')
+      .select('name email phone address isActive createdAt')
       .sort({ createdAt: -1 })
       .lean();
     return res.json({ success: true, count: couriers.length, data: couriers });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+exports.setCourierStatus = async (req, res, next) => {
+  try {
+    if (typeof req.body.isActive !== 'boolean') {
+      return res.status(400).json({ success: false, message: 'Trạng thái nhân viên không hợp lệ.' });
+    }
+    const courier = await User.findOneAndUpdate(
+      { _id: req.params.courierId, role: 'COURIER' },
+      { $set: { isActive: req.body.isActive } },
+      { new: true, runValidators: true }
+    ).select('name email isActive');
+    if (!courier) return res.status(404).json({ success: false, message: 'Không tìm thấy nhân viên vận chuyển.' });
+    if (!courier.isActive) {
+      const io = req.app.get('io');
+      if (io) {
+        for (const socket of io.sockets.sockets.values()) {
+          if (socket.data.user?._id.toString() === courier._id.toString()) socket.disconnect(true);
+        }
+      }
+    }
+    return res.json({
+      success: true,
+      data: courier,
+      message: courier.isActive ? 'Đã mở khóa tài khoản nhân viên.' : 'Đã khóa tài khoản nhân viên.'
+    });
   } catch (error) {
     return next(error);
   }
@@ -184,72 +212,6 @@ exports.listDeliveries = async (req, res, next) => {
   }
 };
 
-exports.assignCourier = async (req, res, next) => {
-  try {
-    const { courierId } = req.body;
-    if (typeof courierId !== 'string' || !mongoose.isValidObjectId(courierId)) {
-      return res.status(400).json({ success: false, message: 'Mã nhân viên vận chuyển không hợp lệ.' });
-    }
-    const courier = await User.findOne({ _id: courierId, role: 'COURIER' }).select('_id');
-    if (!courier) return res.status(404).json({ success: false, message: 'Không tìm thấy nhân viên vận chuyển.' });
-    const delivery = await Delivery.findOneAndUpdate(
-      { _id: req.params.deliveryId, orderType: 'PURCHASE', status: 'PENDING_ASSIGNMENT' },
-      { $set: { courier: courier._id, assignedBy: req.user._id, status: 'ASSIGNED' } },
-      { new: true, runValidators: true }
-    );
-    if (!delivery) return res.status(409).json({ success: false, message: 'Đơn không tồn tại hoặc đã được phân công.' });
-    return res.json({ success: true, data: delivery, message: 'Đã phân công nhân viên giao đơn mua.' });
-  } catch (error) {
-    return next(error);
-  }
-};
-
-exports.createDelivery = async (req, res, next) => {
-  try {
-    const { bookId, courierId, recipientName, recipientPhone, address } = req.body;
-    if (![bookId, courierId, recipientName, recipientPhone, address].every((value) => typeof value === 'string' && value.trim())) {
-      return res.status(400).json({ success: false, message: 'Vui lòng nhập sách, nhân viên, người nhận, số điện thoại và địa chỉ.' });
-    }
-    if (!mongoose.isValidObjectId(bookId) || !mongoose.isValidObjectId(courierId)) {
-      return res.status(400).json({ success: false, message: 'Mã sách hoặc nhân viên không hợp lệ.' });
-    }
-    if (!/^\+?[0-9\s()-]{8,20}$/.test(recipientPhone.trim())) {
-      return res.status(400).json({ success: false, message: 'Số điện thoại người nhận không hợp lệ.' });
-    }
-    const courier = await User.findOne({ _id: courierId, role: 'COURIER' }).select('_id');
-    if (!courier) return res.status(404).json({ success: false, message: 'Không tìm thấy nhân viên vận chuyển.' });
-    const book = await Book.findOneAndUpdate(
-      {
-        _id: bookId,
-        type: 'OWNED',
-        status: 'AVAILABLE',
-        $or: [{ listingMode: 'TRADE' }, { listingMode: { $exists: false } }]
-      },
-      { $set: { status: 'LOCKED_IN_LOOP' } },
-      { new: true, runValidators: true }
-    );
-    if (!book) return res.status(409).json({ success: false, message: 'Sách không còn sẵn sàng để tạo đơn vận chuyển.' });
-
-    try {
-      const delivery = await Delivery.create({
-        book: book._id,
-        courier: courier._id,
-        assignedBy: req.user._id,
-        recipientName: recipientName.trim(),
-        recipientPhone: recipientPhone.trim(),
-        address: address.trim()
-      });
-      return res.status(201).json({ success: true, data: delivery });
-    } catch (error) {
-      await Book.updateOne({ _id: book._id, status: 'LOCKED_IN_LOOP' }, { $set: { status: 'AVAILABLE' } });
-      if (error.code === 11000) return res.status(409).json({ success: false, message: 'Sách này đã có đơn vận chuyển.' });
-      throw error;
-    }
-  } catch (error) {
-    return next(error);
-  }
-};
-
 exports.getDeliveryProof = async (req, res, next) => {
   try {
     const delivery = await Delivery.findById(req.params.deliveryId).select('proofPath proofMimeType');
@@ -274,7 +236,7 @@ exports.collectDeliveryFee = async (req, res, next) => {
       return res.status(409).json({ success: false, message: 'Đơn chưa được nhân viên xác nhận giao hoặc phí đã được ghi nhận.' });
     }
 
-    const book = await Book.findById(delivery.book).select('coverPrice aiAssessment owner');
+    const book = await Book.findById(delivery.book).select('coverPrice salePrice aiAssessment owner damageLevel');
     if (!book) {
       return res.status(409).json({ success: false, message: 'Không tìm thấy sách của đơn vận chuyển.' });
     }
@@ -292,13 +254,9 @@ exports.collectDeliveryFee = async (req, res, next) => {
       }
       if (!transaction || !transaction.feeCollectedAt) throw new Error('Không thể cập nhật khoản phí giao dịch.');
 
-      const aiAssessment = book.aiAssessment;
-      const eligibleForCredits = aiAssessment &&
-        ['NEW', 'LIKE_NEW'].includes(aiAssessment.condition) &&
-        aiAssessment.damageLevel === 'LOW';
-      const creditAmount = eligibleForCredits
-        ? calculateCreditValue(book.coverPrice, aiAssessment.condition) * (delivery.quantity || 1)
-        : 0;
+      const creditAmount = book.aiAssessment
+        ? calculateAssessmentCredits(book.aiAssessment) * (delivery.quantity || 1)
+        : calculateAssessmentCredits({ estimatedPrice: book.salePrice ?? book.coverPrice, damageLevel: book.damageLevel || 'LOW' }) * (delivery.quantity || 1);
       if (creditAmount > 0 && !transaction.creditsAwardedAt) {
         const owner = await User.findById(book.owner).select('_id');
         if (!owner) throw new Error('Không tìm thấy người đăng để cộng điểm.');
@@ -326,7 +284,7 @@ exports.collectDeliveryFee = async (req, res, next) => {
       return res.json({
         success: true,
         data: { delivery: safeDelivery, transaction },
-        message: `Đã duyệt ảnh, ghi nhận ${feeCollected.toLocaleString('vi-VN')} đ phí duy trì và cộng ${transaction.creditsAwarded || 0} điểm cho người đăng đủ điều kiện.`
+        message: `Đã duyệt ảnh, ghi nhận ${feeCollected.toLocaleString('vi-VN')} đ phí duy trì và cộng ${transaction.creditsAwarded || 0} điểm cho người đăng theo giá trị AI và mức hư hại.`
       });
     } catch (error) {
       throw error;

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { fetchTradeLoops } from '../services/api';
+import { fetchTradeLoops } from '../../../services/api.js';
 
 const TradeLoopView = () => {
   const [loops, setLoops] = useState([]);

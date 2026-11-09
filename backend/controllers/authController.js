@@ -72,6 +72,7 @@ exports.login = async (req, res, next) => {
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ success: false, message: 'Email hoặc mật khẩu không chính xác.' });
     }
+    if (user.isActive === false) return res.status(403).json({ success: false, message: 'Tài khoản đã bị khóa. Vui lòng liên hệ quản trị viên.' });
     if (user.role === 'ADMIN') {
       return res.status(403).json({ success: false, message: 'Vui lòng đăng nhập qua trang quản trị.' });
     }
@@ -99,6 +100,7 @@ exports.adminLogin = async (req, res, next) => {
     if (!user || user.role !== 'ADMIN' || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ success: false, message: 'Tài khoản hoặc mật khẩu quản trị không chính xác.' });
     }
+    if (user.isActive === false) return res.status(403).json({ success: false, message: 'Tài khoản quản trị đã bị khóa.' });
     return res.status(200).json({
       success: true,
       token: createToken(user._id),
@@ -119,6 +121,7 @@ exports.courierLogin = async (req, res, next) => {
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ success: false, message: 'Email hoặc mật khẩu nhân viên không chính xác.' });
     }
+    if (user.isActive === false) return res.status(403).json({ success: false, message: 'Tài khoản nhân viên đã bị khóa. Vui lòng liên hệ quản trị viên.' });
     return res.status(200).json({
       success: true,
       token: createToken(user._id),

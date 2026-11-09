@@ -5,8 +5,16 @@ const TradeTransaction = require('../models/TradeTransaction');
 
 exports.listMyDeliveries = async (req, res, next) => {
   try {
-    const deliveries = await Delivery.find({ courier: req.user._id })
-      .populate({ path: 'book', select: 'title author coverPrice maintenanceFee status owner', populate: { path: 'owner', select: 'name phone' } })
+    const deliveries = await Delivery.find({
+      $or: [
+        { courier: req.user._id },
+        {
+          status: 'PENDING_ASSIGNMENT',
+          $or: [{ courier: null }, { courier: { $exists: false } }]
+        }
+      ]
+    })
+      .populate({ path: 'book', select: 'title author coverPrice status owner', populate: { path: 'owner', select: 'name phone' } })
       .populate('assignedBy', 'name')
       .sort({ createdAt: -1 })
       .limit(200)
@@ -16,6 +24,26 @@ exports.listMyDeliveries = async (req, res, next) => {
       hasProof: Boolean(proofPath)
     }));
     return res.json({ success: true, count: safeDeliveries.length, data: safeDeliveries });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+exports.claimDelivery = async (req, res, next) => {
+  try {
+    const delivery = await Delivery.findOneAndUpdate(
+      {
+        _id: req.params.deliveryId,
+        status: 'PENDING_ASSIGNMENT',
+        $or: [{ courier: null }, { courier: { $exists: false } }]
+      },
+      { $set: { courier: req.user._id, status: 'ASSIGNED' } },
+      { new: true, runValidators: true }
+    );
+    if (!delivery) {
+      return res.status(409).json({ success: false, message: 'Đơn này đã được nhân viên khác nhận hoặc không còn khả dụng.' });
+    }
+    return res.json({ success: true, data: delivery, message: 'Bạn đã nhận đơn vận chuyển.' });
   } catch (error) {
     return next(error);
   }
@@ -86,14 +114,28 @@ exports.confirmDelivered = async (req, res, next) => {
       return res.status(409).json({ success: false, message: 'Đơn không tồn tại, không thuộc về bạn hoặc đã được xác nhận.' });
     }
 
-    const book = delivery.orderType === 'PURCHASE'
-      ? await Book.findOne({ _id: delivery.book, listingMode: 'SALE', status: { $in: ['AVAILABLE', 'OUT_OF_STOCK'] } })
-      : await Book.findOneAndUpdate(
+    let book;
+    if (delivery.orderType === 'PURCHASE') {
+      const listing = await Book.findById(delivery.book).select('listingMode');
+      book = listing?.listingMode === 'SALE'
+        ? await Book.findOne({ _id: delivery.book, listingMode: 'SALE', status: { $in: ['AVAILABLE', 'OUT_OF_STOCK'] } })
+        : await Book.findOneAndUpdate(
+          { _id: delivery.book, status: 'LOCKED_IN_LOOP', type: 'OWNED' },
+          { $set: { status: 'TRADED' } },
+          { new: true, runValidators: true }
+        );
+    } else {
+      book = await Book.findOneAndUpdate(
         { _id: delivery.book, status: 'LOCKED_IN_LOOP', type: 'OWNED' },
         { $set: { status: 'TRADED' } },
         { new: true, runValidators: true }
       );
-    if (!book) throw new Error('Không thể hoàn tất đơn vì trạng thái sách đã thay đổi.');
+    }
+    if (!book) {
+      const error = new Error('Trạng thái sách không còn khớp với đơn. Đơn đã được mở lại để thử xác nhận sau khi cập nhật.');
+      error.statusCode = 409;
+      throw error;
+    }
     bookMarkedDelivered = true;
 
     transaction = await TradeTransaction.create({
@@ -127,6 +169,9 @@ exports.confirmDelivered = async (req, res, next) => {
     await fs.unlink(uploadedFile.path).catch((cleanupError) => {
       if (cleanupError.code !== 'ENOENT') console.error('Could not remove an unused delivery proof:', cleanupError);
     });
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
     return next(error);
   }
 };

@@ -15,6 +15,7 @@ module.exports = async (req, res, next) => {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(payload.id);
     if (!user) return res.status(401).json({ success: false, message: 'Tài khoản không còn tồn tại.' });
+    if (user.isActive === false) return res.status(403).json({ success: false, message: 'Tài khoản đã bị khóa. Vui lòng liên hệ quản trị viên.' });
     req.user = user;
     return next();
   } catch (error) {

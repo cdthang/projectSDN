@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { fetchMyOrder } from './services/api.js';
+import { fetchMyOrder } from '../../../services/api.js';
+import { SiteFooter, SiteHeader } from '../../../shared/SiteLayout.jsx';
 
 const currency = new Intl.NumberFormat('vi-VN', {
   style: 'currency',
@@ -20,10 +21,7 @@ function OrderSuccessPage() {
 
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="/"><span className="brand-mark">b</span><span>book<span className="brand-accent">swap</span></span></a>
-        <a className="button button-quiet" href="/">Về trang chủ</a>
-      </header>
+      <SiteHeader><a className="button button-quiet" href="/">Về trang chủ</a></SiteHeader>
       <main className="order-success-page">
         {error ? <div className="notice notice-error">{error}</div> : !order ? (
           <p className="loading-state">Đang xác nhận đơn hàng...</p>
@@ -32,12 +30,13 @@ function OrderSuccessPage() {
             <span className="order-success-icon" aria-hidden="true">✓</span>
             <p className="eyebrow">BOOKSWAP · ĐẶT HÀNG THÀNH CÔNG</p>
             <h1>Cảm ơn bạn đã mua sách!</h1>
-            <p className="muted">Đơn hàng đã được ghi nhận. Nhân viên sẽ giao sau khi admin phân công.</p>
+            <p className="muted">Đơn hàng đã được ghi nhận. Nhân viên vận chuyển sẽ chọn nhận đơn để giao cho bạn.</p>
             <dl className="order-success-details">
               <div><dt>Mã đơn</dt><dd>#{order._id.slice(-6).toUpperCase()}</dd></div>
               <div><dt>Sách</dt><dd>{order.book?.title || 'Sách'}</dd></div>
               <div><dt>Số lượng</dt><dd>{order.quantity || 1}</dd></div>
               <div><dt>Tổng giá sách</dt><dd>{currency.format((order.salePrice || 0) * (order.quantity || 1))}</dd></div>
+              <div><dt>Hình thức thanh toán</dt><dd>{order.paymentMethod === 'POINTS' ? 'Đổi bằng điểm' : order.paymentMethod === 'CASH' ? 'Tiền mặt khi nhận' : 'COD / điểm'}</dd></div>
               <div><dt>Đã dùng điểm</dt><dd>{order.pointsUsed || 0} điểm</dd></div>
               <div><dt>Thanh toán COD</dt><dd>{currency.format(order.cashToCollect || 0)}</dd></div>
             </dl>
@@ -48,7 +47,7 @@ function OrderSuccessPage() {
           </section>
         )}
       </main>
-      <footer className="footer"><a className="brand" href="/"><span className="brand-mark">b</span><span>book<span className="brand-accent">swap</span></span></a><p>Đọc thêm. Chia sẻ nhiều. Sống xanh hơn.</p></footer>
+      <SiteFooter />
     </div>
   );
 }

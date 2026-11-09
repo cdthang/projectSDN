@@ -8,6 +8,7 @@ const deliverySchema = new mongoose.Schema({
   orderType: { type: String, enum: ['TRADE', 'PURCHASE'], default: 'TRADE' },
   salePrice: { type: Number, min: 0 },
   quantity: { type: Number, min: 1, default: 1 },
+  paymentMethod: { type: String, enum: ['CASH', 'POINTS', 'MIXED'], default: 'MIXED' },
   pointsUsed: { type: Number, min: 0, default: 0 },
   cashToCollect: { type: Number, min: 0 },
   codCollected: { type: Boolean, default: false },

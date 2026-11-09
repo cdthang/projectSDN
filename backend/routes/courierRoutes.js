@@ -7,6 +7,7 @@ const authMiddleware = require('../middlewares/authMiddleware');
 const courierMiddleware = require('../middlewares/courierMiddleware');
 const {
   listMyDeliveries,
+  claimDelivery,
   startDelivery,
   confirmDelivered,
   getMyDeliveryProof
@@ -57,6 +58,7 @@ const router = express.Router();
 
 router.use(authMiddleware, courierMiddleware);
 router.get('/deliveries', listMyDeliveries);
+router.post('/deliveries/:deliveryId/claim', claimDelivery);
 router.post('/deliveries/:deliveryId/start', startDelivery);
 router.post('/deliveries/:deliveryId/proof', uploadProof, confirmDelivered);
 router.get('/deliveries/:deliveryId/proof', getMyDeliveryProof);

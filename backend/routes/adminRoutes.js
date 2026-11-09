@@ -8,9 +8,8 @@ const {
   listTransactions,
   listCouriers,
   createCourier,
+  setCourierStatus,
   listDeliveries,
-  createDelivery,
-  assignCourier,
   getDeliveryProof,
   collectDeliveryFee
 } = require('../controllers/adminController');
@@ -22,11 +21,10 @@ router.get('/dashboard', getDashboard);
 router.get('/users', listUsers);
 router.get('/couriers', listCouriers);
 router.post('/couriers', createCourier);
+router.patch('/couriers/:courierId/status', setCourierStatus);
 router.get('/books', listBooks);
 router.get('/transactions', listTransactions);
 router.get('/deliveries', listDeliveries);
-router.post('/deliveries', createDelivery);
-router.post('/deliveries/:deliveryId/assign', assignCourier);
 router.get('/deliveries/:deliveryId/proof', getDeliveryProof);
 router.post('/deliveries/:deliveryId/collect-fee', collectDeliveryFee);
 

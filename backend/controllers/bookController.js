@@ -7,6 +7,7 @@ const jwt = require('jsonwebtoken');
 const analyzeImage = require('../services/geminiService');
 const { hashImage, imagePath, isValidImage } = require('../utils/bookImage');
 const calculateCreditValue = require('../utils/creditCalculator');
+const calculateAssessmentCredits = require('../utils/assessmentCreditCalculator');
 
 const validTypes = ['OWNED', 'WISHLIST'];
 const validListingModes = ['SALE', 'TRADE'];
@@ -21,6 +22,7 @@ const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const presentBook = (book, includePrivate = false) => {
   const result = book.toObject ? book.toObject() : { ...book };
+  const assessment = result.aiAssessment;
   delete result.imagePath;
   delete result.aiAssessment;
   if (!includePrivate) {
@@ -30,6 +32,25 @@ const presentBook = (book, includePrivate = false) => {
   result.listingMode = result.listingMode || 'TRADE';
   if (result.listingMode === 'SALE' && result.stockQuantity === undefined) result.stockQuantity = 1;
   result.salePrice = result.salePrice ?? result.coverPrice;
+  const assessedCredits = assessment
+    ? calculateAssessmentCredits(assessment)
+    : calculateAssessmentCredits({ estimatedPrice: result.salePrice, damageLevel: result.damageLevel || 'LOW' });
+  if (assessment) {
+    if (includePrivate) {
+      result.condition = assessment.condition;
+      result.damageLevel = assessment.damageLevel;
+      result.damageNotes = assessment.damageNotes;
+    } else {
+      delete result.condition;
+      delete result.damageLevel;
+      delete result.damageNotes;
+    }
+  }
+  if (result.type === 'OWNED') {
+    if (result.listingMode === 'TRADE') result.tradePoints = assessedCredits;
+    if (includePrivate) result.creditValue = assessedCredits;
+    else delete result.creditValue;
+  }
   result.imageUrl = result.imageMimeType ? `/api/books/${result._id}/image` : '';
   return result;
 };
@@ -193,10 +214,10 @@ exports.createBook = async (req, res, next) => {
     if (!validListingModes.includes(listingMode)) {
       return res.status(400).json({ success: false, message: 'Hình thức đăng sách không hợp lệ.' });
     }
-    if (!validConditions.includes(condition)) {
+    if (type === 'WISHLIST' && !validConditions.includes(condition)) {
       return res.status(400).json({ success: false, message: 'Tình trạng sách không hợp lệ.' });
     }
-    if (!validDamageLevels.includes(damageLevel)) {
+    if (type === 'WISHLIST' && !validDamageLevels.includes(damageLevel)) {
       return res.status(400).json({ success: false, message: 'Mức độ hư hại không hợp lệ.' });
     }
     const price = Number(coverPrice);
@@ -206,20 +227,18 @@ exports.createBook = async (req, res, next) => {
 
     let assessment;
     if (type === 'OWNED') {
-      if (listingMode === 'SALE') {
       const sellingPrice = Number(salePrice);
       if (!Number.isSafeInteger(sellingPrice) || sellingPrice < 0) {
-        return res.status(400).json({ success: false, message: 'Vui lòng nhập giá bán là số nguyên không âm.' });
+        return res.status(400).json({ success: false, message: 'Vui lòng nhập giá tiền mặt là số nguyên không âm.' });
       }
-      const quantity = Number(stockQuantity);
-      if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 10000) {
-        return res.status(400).json({ success: false, message: 'Số lượng bán phải từ 1 đến 10.000 cuốn.' });
-      }
-      } else if (salePrice !== undefined && salePrice !== '') {
-        return res.status(400).json({ success: false, message: 'Chỉ tin đăng bán mới có giá bán.' });
+      if (listingMode === 'SALE') {
+        const quantity = Number(stockQuantity);
+        if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 10000) {
+          return res.status(400).json({ success: false, message: 'Số lượng bán phải từ 1 đến 10.000 cuốn.' });
+        }
       }
       if (!req.file || !isValidImage(req.file.buffer, req.file.mimetype)) {
-        return res.status(400).json({ success: false, message: 'Sách đăng bán cần có ảnh JPEG, PNG hoặc WebP hợp lệ.' });
+        return res.status(400).json({ success: false, message: 'Sách cần có ảnh JPEG, PNG hoặc WebP hợp lệ để AI đánh giá.' });
       }
       if (!process.env.JWT_SECRET) return next(new Error('JWT_SECRET is not configured'));
       let verified;
@@ -243,7 +262,7 @@ exports.createBook = async (req, res, next) => {
       await fs.mkdir(path.dirname(savedImagePath), { recursive: true });
       await fs.writeFile(savedImagePath, req.file.buffer, { flag: 'wx' });
     } else if (req.file || req.body.analysisToken) {
-      return res.status(400).json({ success: false, message: 'Ảnh AI chỉ áp dụng cho sách đang đăng bán.' });
+      return res.status(400).json({ success: false, message: 'Ảnh AI chỉ áp dụng cho sách đang đăng.' });
     }
 
     const book = await Book.create({
@@ -254,18 +273,17 @@ exports.createBook = async (req, res, next) => {
       coverPrice: price,
       ...(type === 'OWNED' ? {
         listingMode,
-        ...(listingMode === 'SALE'
-          ? { salePrice: Number(salePrice), stockQuantity: Number(stockQuantity) }
-          : { stockQuantity: 1 })
+        salePrice: Number(salePrice),
+        stockQuantity: listingMode === 'SALE' ? Number(stockQuantity) : 1
       } : {}),
       ...(assessment ? { aiAssessment: assessment } : {}),
       ...(savedImagePath ? { imagePath: savedImagePath, imageMimeType: req.file.mimetype } : {}),
       maintenanceFee: calculateMaintenanceFee(price, type),
       maintenanceFeeRate: maintenanceFeeRate,
-      condition,
-      damageLevel,
-      damageNotes: typeof damageNotes === 'string' ? damageNotes.trim() : '',
-      creditValue: calculateCreditValue(price, condition),
+      condition: assessment?.condition || condition,
+      damageLevel: assessment?.damageLevel || damageLevel,
+      damageNotes: assessment?.damageNotes || (typeof damageNotes === 'string' ? damageNotes.trim() : ''),
+      creditValue: assessment ? calculateAssessmentCredits(assessment) : calculateCreditValue(price, condition),
       type
     });
     return res.status(201).json({ success: true, data: presentBook(book, true) });
@@ -371,43 +389,94 @@ exports.createBookOrder = async (req, res, next) => {
       return res.status(403).json({ success: false, message: 'Chỉ tài khoản người dùng mới có thể đặt mua sách.' });
     }
 
-    const book = await Book.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        owner: { $ne: req.user._id },
-        type: 'OWNED',
-        listingMode: 'SALE',
-        status: 'AVAILABLE',
-        stockQuantity: { $gte: quantity }
-      },
-      [{
-        $set: {
-          stockQuantity: { $subtract: ['$stockQuantity', quantity] },
-          status: {
-            $cond: [
-              { $eq: [{ $subtract: ['$stockQuantity', quantity] }, 0] },
-              'OUT_OF_STOCK',
-              'AVAILABLE'
-            ]
+    const listing = await Book.findOne({
+      _id: req.params.id,
+      owner: { $ne: req.user._id },
+      type: 'OWNED',
+      status: 'AVAILABLE'
+    }).select('listingMode stockQuantity');
+    if (!listing) {
+      return res.status(409).json({ success: false, message: 'Sách không còn sẵn sàng hoặc bạn không thể tự mua sách của mình.' });
+    }
+
+    const isSaleListing = listing.listingMode === 'SALE';
+    const checkoutMethod = req.body.paymentMethod;
+    if (!isSaleListing && quantity !== 1) {
+      return res.status(400).json({ success: false, message: 'Sách trao đổi chỉ có một cuốn trong tin đăng.' });
+    }
+    if (!isSaleListing && !['POINTS', 'CASH'].includes(checkoutMethod)) {
+      return res.status(400).json({ success: false, message: 'Hãy chọn thanh toán bằng điểm hoặc tiền mặt.' });
+    }
+    const book = isSaleListing
+      ? await Book.findOneAndUpdate(
+        {
+          _id: req.params.id,
+          owner: { $ne: req.user._id },
+          type: 'OWNED',
+          listingMode: 'SALE',
+          status: 'AVAILABLE',
+          stockQuantity: { $gte: quantity }
+        },
+        [{
+          $set: {
+            stockQuantity: { $subtract: ['$stockQuantity', quantity] },
+            status: {
+              $cond: [
+                { $eq: [{ $subtract: ['$stockQuantity', quantity] }, 0] },
+                'OUT_OF_STOCK',
+                'AVAILABLE'
+              ]
+            }
           }
-        }
-      }],
-      { new: true, runValidators: true }
-    );
+        }],
+        { new: true, runValidators: true }
+      )
+      : await Book.findOneAndUpdate(
+        {
+          _id: req.params.id,
+          owner: { $ne: req.user._id },
+          type: 'OWNED',
+          status: 'AVAILABLE',
+          $or: [{ listingMode: 'TRADE' }, { listingMode: { $exists: false } }]
+        },
+        { $set: { status: 'LOCKED_IN_LOOP' } },
+        { new: true, runValidators: true }
+      );
     if (!book) return res.status(409).json({ success: false, message: 'Sách đã hết số lượng, không còn sẵn sàng hoặc bạn không thể tự mua sách của mình.' });
 
     const salePrice = book.salePrice ?? book.coverPrice;
     const totalPrice = salePrice * quantity;
     const restoreStock = async () => {
-      await Book.updateOne(
-        { _id: book._id },
-        [{ $set: {
-          stockQuantity: { $add: [{ $ifNull: ['$stockQuantity', 0] }, quantity] },
-          status: 'AVAILABLE'
-        } }]
-      );
+      if (isSaleListing) {
+        await Book.updateOne(
+          { _id: book._id },
+          [{ $set: {
+            stockQuantity: { $add: [{ $ifNull: ['$stockQuantity', 0] }, quantity] },
+            status: 'AVAILABLE'
+          } }]
+        );
+      } else {
+        await Book.updateOne({ _id: book._id, status: 'LOCKED_IN_LOOP' }, { $set: { status: 'AVAILABLE' } });
+      }
     };
-    if (pointsUsed > Math.floor(totalPrice / pointValue)) {
+    const assessedPoints = calculateAssessmentCredits(book.aiAssessment || {
+      estimatedPrice: salePrice,
+      damageLevel: book.damageLevel
+    });
+    if (!isSaleListing && checkoutMethod === 'POINTS' && assessedPoints < 1) {
+      await restoreStock();
+      return res.status(400).json({ success: false, message: 'Giá trị điểm của sách quá thấp; vui lòng chọn thanh toán tiền mặt.' });
+    }
+    if (!isSaleListing && checkoutMethod === 'POINTS' && pointsUsed !== assessedPoints) {
+      await restoreStock();
+      return res.status(400).json({ success: false, message: `Đơn này cần đúng ${assessedPoints} điểm theo giá trị và tình trạng sách.` });
+    }
+    if (!isSaleListing && checkoutMethod === 'CASH' && pointsUsed !== 0) {
+      await restoreStock();
+      return res.status(400).json({ success: false, message: 'Đơn thanh toán tiền mặt không sử dụng điểm.' });
+    }
+    const pointsValueLimit = isSaleListing ? totalPrice : checkoutMethod === 'POINTS' ? assessedPoints * pointValue : 0;
+    if (pointsUsed * pointValue > pointsValueLimit) {
       await restoreStock();
       return res.status(400).json({ success: false, message: 'Số điểm dùng không được vượt quá tổng giá trị đơn hàng.' });
     }
@@ -432,8 +501,9 @@ exports.createBookOrder = async (req, res, next) => {
         orderType: 'PURCHASE',
         salePrice,
         quantity,
+        paymentMethod: isSaleListing ? 'MIXED' : checkoutMethod,
         pointsUsed,
-        cashToCollect: totalPrice - pointsUsed * pointValue,
+        cashToCollect: isSaleListing ? totalPrice - pointsUsed * pointValue : checkoutMethod === 'CASH' ? totalPrice : 0,
         status: 'PENDING_ASSIGNMENT',
         recipientName: recipientName.trim(),
         recipientPhone: recipientPhone.trim(),
@@ -449,7 +519,7 @@ exports.createBookOrder = async (req, res, next) => {
           pointsUsed: delivery.pointsUsed,
           cashToCollect: delivery.cashToCollect
         },
-        message: 'Đã nhận đơn mua sách. Admin sẽ phân công nhân viên giao hàng.'
+        message: 'Đã nhận đơn mua sách. Nhân viên vận chuyển sẽ chọn nhận đơn.'
       });
     } catch (error) {
       if (creditsDebited) {
